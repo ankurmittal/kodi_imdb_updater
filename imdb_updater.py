@@ -10,6 +10,11 @@ Usage:
 Datasets used (downloaded automatically and cached by date):
     - https://datasets.imdbws.com/title.episode.tsv.gz  (episode->show mappings + IMDb IDs)
     - https://datasets.imdbws.com/title.basics.tsv.gz   (show/movie titles for fallback matching)
+
+Supported DB versions:
+    MyVideos131  ->  Kodi 21 (Omega)    [TESTED]
+
+Other versions are rejected by default. Use --force to override (at your own risk).
 """
 
 import argparse
@@ -18,10 +23,81 @@ import datetime
 import glob
 import gzip
 import os
+import re
 import shutil
 import sqlite3
 import sys
 import urllib.request
+
+# ---------------------------------------------------------------------------
+# Supported DB versions
+# ---------------------------------------------------------------------------
+
+# Maps MyVideos<version> number -> Kodi release name.
+# Add new entries here once tested on a new Kodi version.
+SUPPORTED_DB_VERSIONS: dict[int, str] = {
+    131: "Kodi 21 (Omega)",
+}
+
+
+def check_db_version(db_path: str, force: bool) -> int:
+    """
+    Determine the DB schema version two ways:
+      1. Read idVersion from the 'version' table inside the DB (authoritative)
+      2. Parse the version number from the filename as a sanity cross-check
+
+    Exits with an error if the version is unsupported, unless --force is set.
+    Returns the version number from the DB.
+    """
+    basename = os.path.basename(db_path)
+
+    # 1. Read from the DB itself
+    try:
+        conn = sqlite3.connect(db_path)
+        db_version = conn.execute("SELECT idVersion FROM version LIMIT 1").fetchone()
+        conn.close()
+        if db_version is None:
+            raise ValueError("version table is empty")
+        db_version = int(db_version[0])
+    except Exception as e:
+        print(f"WARNING: Could not read version table from DB: {e}", file=sys.stderr)
+        db_version = None
+
+    # 2. Parse from filename
+    match = re.search(r'MyVideos(\d+)\.db', basename, re.IGNORECASE)
+    filename_version = int(match.group(1)) if match else None
+
+    # Cross-check
+    if db_version is not None and filename_version is not None and db_version != filename_version:
+        print(
+            f"WARNING: Filename suggests version {filename_version} but DB reports {db_version}. "
+            "Trusting the DB.", file=sys.stderr
+        )
+
+    version = db_version if db_version is not None else filename_version
+
+    if version is None:
+        print("ERROR: Cannot determine DB version from file or content.", file=sys.stderr)
+        if not force:
+            print("Use --force to run anyway. Exiting.")
+            sys.exit(1)
+        return -1
+
+    if version in SUPPORTED_DB_VERSIONS:
+        print(f"DB version: {version} ({SUPPORTED_DB_VERSIONS[version]}) — supported ✓")
+    else:
+        msg = (
+            f"DB version {version} ({basename}) has NOT been tested with this tool.\n"
+            f"Supported versions: {', '.join(f'{v} ({n})' for v, n in SUPPORTED_DB_VERSIONS.items())}\n"
+            f"Run with --force to proceed at your own risk."
+        )
+        print(f"ERROR: {msg}", file=sys.stderr)
+        if not force:
+            sys.exit(1)
+        print("WARNING: --force specified, continuing anyway.", file=sys.stderr)
+
+    return version
+
 
 # ---------------------------------------------------------------------------
 # Dataset downloader / cache manager
@@ -293,11 +369,15 @@ def main():
                         help='Path to an already-extracted title.episode.tsv (skips download)')
     parser.add_argument('--basics-tsv', default=None,
                         help='Path to an already-extracted title.basics.tsv (skips download)')
+    parser.add_argument('--force', action='store_true',
+                        help='Bypass DB version check (use at your own risk)')
     args = parser.parse_args()
 
     if not os.path.exists(args.db):
         print(f"ERROR: DB not found: {args.db}", file=sys.stderr)
         sys.exit(1)
+
+    check_db_version(args.db, force=args.force)
 
     for flag, path in [('--episode-tsv', args.episode_tsv), ('--basics-tsv', args.basics_tsv)]:
         if path and not os.path.exists(path):
