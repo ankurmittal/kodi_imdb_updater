@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import sqlite3
 from unittest.mock import patch, MagicMock
-from imdb_updater import TsvCache, load_episode_tsv, load_basics_tsv_for_shows, get_episodes_missing_imdb, get_shows_missing_imdb, check_db_version, SUPPORTED_DB_VERSIONS
+from imdb_updater import TsvCache, load_episode_tsv, load_basics_tsv_for_shows, get_episodes_missing_imdb, get_shows_missing_imdb, check_db_version, SUPPORTED_DB_VERSIONS, vacuum_database
 
 
 class TestTsvCache(unittest.TestCase):
@@ -193,6 +193,44 @@ class TestCheckDbVersion(unittest.TestCase):
         sqlite3.connect(path).close()  # empty DB, no version table
         result = check_db_version(path, force=False)
         self.assertEqual(result, supported)
+
+
+class TestVacuumDatabases(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _make_db(self, name):
+        path = os.path.join(self.tmp, name)
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE test (id INTEGER, data TEXT)")
+        for i in range(100):
+            conn.execute("INSERT INTO test VALUES (?, ?)", (i, 'x' * 100))
+        conn.commit()
+        conn.execute("DELETE FROM test")  # create fragmentation
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_dry_run_does_not_modify(self):
+        db = self._make_db("MyVideos131.db")
+        size_before = os.path.getsize(db)
+        vacuum_database(db, dry_run=True)
+        self.assertEqual(os.path.getsize(db), size_before)
+
+    def test_vacuum_reduces_or_maintains_size(self):
+        db = self._make_db("MyVideos131.db")
+        size_before = os.path.getsize(db)
+        vacuum_database(db, dry_run=False)
+        size_after = os.path.getsize(db)
+        self.assertLessEqual(size_after, size_before)
+
+    def test_vacuums_single_db(self):
+        db_path = self._make_db("MyVideos131.db")
+        vacuum_database(db_path, dry_run=False)
+        self.assertTrue(os.path.exists(db_path))
 
 
 if __name__ == '__main__':

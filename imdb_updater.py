@@ -353,6 +353,52 @@ def run(db_path: str, cache_dir: str, dry_run: bool,
 
 
 # ---------------------------------------------------------------------------
+# VACUUM
+# ---------------------------------------------------------------------------
+
+def vacuum_database(db_path: str, dry_run: bool):
+    """
+    Run VACUUM on the given Kodi SQLite database.
+    VACUUM rewrites the entire DB file, reclaiming space from deleted rows and
+    reducing fragmentation. Requires Kodi to be fully closed.
+    """
+    candidates = [os.path.abspath(db_path)]
+
+    if not candidates:
+        print("No Kodi DB files found to VACUUM.")
+        return
+
+    print(f"\n=== VACUUM ({len(candidates)} database(s)) ===")
+    if dry_run:
+        for path in candidates:
+            size_mb = os.path.getsize(path) / 1024 / 1024
+            print(f"  [DRY RUN] Would VACUUM: {os.path.basename(path)} ({size_mb:.1f} MB)")
+        return
+
+    total_before = 0
+    total_after = 0
+    for path in candidates:
+        name = os.path.basename(path)
+        size_before = os.path.getsize(path)
+        total_before += size_before
+        print(f"  Vacuuming {name} ({size_before / 1024 / 1024:.1f} MB)...", end=' ', flush=True)
+        try:
+            conn = sqlite3.connect(path)
+            conn.execute("VACUUM")
+            conn.close()
+            size_after = os.path.getsize(path)
+            total_after += size_after
+            saved = (size_before - size_after) / 1024 / 1024
+            print(f"done. {size_after / 1024 / 1024:.1f} MB (saved {saved:.1f} MB)")
+        except Exception as e:
+            print(f"FAILED: {e}", file=sys.stderr)
+            total_after += size_before  # count as unchanged
+
+    saved_total = (total_before - total_after) / 1024 / 1024
+    print(f"\n  Total saved: {saved_total:.1f} MB ({total_before/1024/1024:.1f} -> {total_after/1024/1024:.1f} MB)")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -391,6 +437,8 @@ def main():
         episode_tsv_path=args.episode_tsv,
         basics_tsv_path=args.basics_tsv,
     )
+
+    vacuum_database(args.db, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
