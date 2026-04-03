@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import sqlite3
 from unittest.mock import patch, MagicMock
-from imdb_updater import TsvCache, load_episode_tsv, load_basics_tsv_for_shows, get_episodes_missing_imdb, get_shows_missing_imdb
+from imdb_updater import TsvCache, load_episode_tsv, load_basics_tsv_for_shows, get_episodes_missing_imdb, get_shows_missing_imdb, check_db_version, SUPPORTED_DB_VERSIONS
 
 
 class TestTsvCache(unittest.TestCase):
@@ -139,6 +139,60 @@ class TestDatabaseQueries(unittest.TestCase):
         rows = get_shows_missing_imdb(self.conn)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][1], 'Aspirants')
+
+
+class TestCheckDbVersion(unittest.TestCase):
+    def _make_db(self, tmp_dir, version):
+        """Create a minimal SQLite DB with the given idVersion."""
+        path = os.path.join(tmp_dir, f"MyVideos{version}.db")
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE version (idVersion INTEGER, iCompressCount INTEGER)")
+        conn.execute("INSERT INTO version VALUES (?, 0)", (version,))
+        conn.commit()
+        conn.close()
+        return path
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_supported_version_passes(self):
+        supported = next(iter(SUPPORTED_DB_VERSIONS))
+        path = self._make_db(self.tmp, supported)
+        result = check_db_version(path, force=False)
+        self.assertEqual(result, supported)
+
+    def test_unsupported_version_exits_without_force(self):
+        path = self._make_db(self.tmp, 9999)
+        with self.assertRaises(SystemExit) as cm:
+            check_db_version(path, force=False)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_unsupported_version_continues_with_force(self):
+        path = self._make_db(self.tmp, 9999)
+        result = check_db_version(path, force=True)
+        self.assertEqual(result, 9999)
+
+    def test_db_internal_version_takes_priority_over_filename(self):
+        # Filename says 999 but DB internally reports a supported version
+        internal_ver = next(iter(SUPPORTED_DB_VERSIONS))
+        path = os.path.join(self.tmp, "MyVideos999.db")
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE version (idVersion INTEGER, iCompressCount INTEGER)")
+        conn.execute("INSERT INTO version VALUES (?, 0)", (internal_ver,))
+        conn.commit()
+        conn.close()
+        result = check_db_version(path, force=False)
+        self.assertEqual(result, internal_ver)
+
+    def test_falls_back_to_filename_if_no_version_table(self):
+        supported = next(iter(SUPPORTED_DB_VERSIONS))
+        path = os.path.join(self.tmp, f"MyVideos{supported}.db")
+        sqlite3.connect(path).close()  # empty DB, no version table
+        result = check_db_version(path, force=False)
+        self.assertEqual(result, supported)
 
 
 if __name__ == '__main__':
